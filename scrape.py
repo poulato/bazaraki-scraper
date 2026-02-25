@@ -7,6 +7,7 @@ Outputs a CSV file.
 
 import csv
 import json
+import math
 import re
 import sys
 import time
@@ -262,6 +263,185 @@ def enrich_ad(ad, subst_names):
     ad["district"] = district.get("DIST_NM_E", "")
 
 
+# ── Road proximity (Overpass / OSM) ──────────────────────────────────────────
+import numpy as np
+
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+ROAD_SEARCH_RADIUS = 500  # metres
+ROAD_TYPES = "motorway|trunk|primary|secondary|tertiary|residential"
+
+# Cyprus bounding box (with margin)
+CY_BBOX = (34.4, 32.0, 35.8, 34.7)  # south, west, north, east
+
+
+def _haversine(lat1, lon1, lat2, lon2):
+    """Distance in metres between two WGS-84 points."""
+    R = 6_371_000
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lon2 - lon1)
+    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _haversine_np(lat1, lon1, lat2_arr, lon2_arr):
+    """Vectorised haversine: one point vs arrays. Returns distances in metres."""
+    R = 6_371_000
+    φ1 = np.radians(lat1)
+    φ2 = np.radians(lat2_arr)
+    Δφ = np.radians(lat2_arr - lat1)
+    Δλ = np.radians(lon2_arr - lon1)
+    a = np.sin(Δφ / 2) ** 2 + np.cos(φ1) * np.cos(φ2) * np.sin(Δλ / 2) ** 2
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+
+_road_cache = None
+
+
+def _load_cyprus_roads():
+    """Download all Cyprus road nodes in one Overpass query. Returns
+    (node_lats, node_lngs, node_road_type) as numpy arrays + a list."""
+    global _road_cache
+    if _road_cache is not None:
+        return _road_cache
+
+    s, w, n, e = CY_BBOX
+    query = (
+        f'[out:json][timeout:120];'
+        f'way["highway"~"{ROAD_TYPES}"]({s},{w},{n},{e});'
+        f'(._;>;);out body qt;'
+    )
+    print("  Downloading Cyprus road network from OSM (one-time)...")
+    resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=180)
+    data = resp.json()
+
+    nodes = {}
+    way_nodes = {}  # node_id -> highway type
+    for el in data.get("elements", []):
+        if el["type"] == "node":
+            nodes[el["id"]] = (el["lat"], el["lon"])
+        elif el["type"] == "way":
+            hw = el.get("tags", {}).get("highway", "")
+            for nid in el.get("nodes", []):
+                if nid not in way_nodes:
+                    way_nodes[nid] = hw
+
+    lats, lngs, types = [], [], []
+    for nid, hw in way_nodes.items():
+        if nid in nodes:
+            lat, lon = nodes[nid]
+            lats.append(lat)
+            lngs.append(lon)
+            types.append(hw)
+
+    print(f"  Loaded {len(lats):,} road nodes")
+    _road_cache = (np.array(lats), np.array(lngs), types)
+    return _road_cache
+
+
+def compute_road_distances(ads):
+    """Batch-compute nearest road distance for all ads with coordinates."""
+    to_process = [a for a in ads if a.get("lat") is not None]
+    if not to_process:
+        return
+
+    node_lats, node_lngs, node_types = _load_cyprus_roads()
+    if len(node_lats) == 0:
+        return
+
+    for i, ad in enumerate(to_process):
+        dists = _haversine_np(ad["lat"], ad["lng"], node_lats, node_lngs)
+        idx = np.argmin(dists)
+        best_dist = dists[idx]
+        if best_dist <= ROAD_SEARCH_RADIUS:
+            ad["road_distance_m"] = round(float(best_dist))
+            ad["road_type"] = node_types[idx]
+        else:
+            ad["road_distance_m"] = ""
+            ad["road_type"] = ""
+        if (i + 1) % 50 == 0 or (i + 1) == len(to_process):
+            print(f"  Road distances: {i+1}/{len(to_process)}")
+
+
+# ── Terrain slope (Open-Meteo elevation API) ────────────────────────────────
+OPEN_METEO_ELEV_URL = "https://api.open-meteo.com/v1/elevation"
+SLOPE_SAMPLE_OFFSET = 0.001  # ~111m at equator, ~91m at 35°N
+
+
+def _batch_elevations(coords):
+    """Fetch elevations for a list of (lat, lng) tuples. Returns list of floats."""
+    elevations = []
+    for i in range(0, len(coords), 100):
+        chunk = coords[i:i + 100]
+        lats = ",".join(f"{c[0]:.6f}" for c in chunk)
+        lngs = ",".join(f"{c[1]:.6f}" for c in chunk)
+        try:
+            resp = requests.get(
+                OPEN_METEO_ELEV_URL,
+                params={"latitude": lats, "longitude": lngs},
+                timeout=15,
+            )
+            data = resp.json()
+            elevations.extend(data.get("elevation", [None] * len(chunk)))
+        except Exception:
+            elevations.extend([None] * len(chunk))
+    return elevations
+
+
+def compute_slopes(ads):
+    """Batch-compute slope for all ads that have coordinates.
+    Sets slope_pct and slope_class on each ad."""
+    coords = []
+    indexed_ads = []
+    for ad in ads:
+        lat, lng = ad.get("lat"), ad.get("lng")
+        if lat is None or lng is None:
+            continue
+        indexed_ads.append(ad)
+        d = SLOPE_SAMPLE_OFFSET
+        coords.extend([
+            (lat, lng),
+            (lat + d, lng),   # N
+            (lat - d, lng),   # S
+            (lat, lng + d),   # E
+            (lat, lng - d),   # W
+        ])
+
+    if not coords:
+        return
+
+    elevs = _batch_elevations(coords)
+
+    for i, ad in enumerate(indexed_ads):
+        base = i * 5
+        e_center = elevs[base]
+        e_n = elevs[base + 1]
+        e_s = elevs[base + 2]
+        e_e = elevs[base + 3]
+        e_w = elevs[base + 4]
+
+        if any(v is None for v in (e_center, e_n, e_s, e_e, e_w)):
+            continue
+
+        lat = ad["lat"]
+        h_ns = _haversine(lat - SLOPE_SAMPLE_OFFSET, ad["lng"],
+                          lat + SLOPE_SAMPLE_OFFSET, ad["lng"])
+        h_ew = _haversine(lat, ad["lng"] - SLOPE_SAMPLE_OFFSET,
+                          lat, ad["lng"] + SLOPE_SAMPLE_OFFSET)
+
+        slope_ns = abs(e_n - e_s) / h_ns * 100 if h_ns > 0 else 0
+        slope_ew = abs(e_e - e_w) / h_ew * 100 if h_ew > 0 else 0
+        max_slope = round(max(slope_ns, slope_ew), 1)
+
+        ad["slope_pct"] = max_slope
+        if max_slope < 5:
+            ad["slope_class"] = "flat"
+        elif max_slope < 15:
+            ad["slope_class"] = "moderate"
+        else:
+            ad["slope_class"] = "steep"
+
+
 # ── Price parsing & derived metrics ──────────────────────────────────────────
 def parse_price_eur(price_str):
     """Parse a Bazaraki price string like '€3.900.000' into a numeric value.
@@ -294,6 +474,7 @@ CSV_FIELDS = [
     "id", "url", "title", "price", "price_numeric", "location",
     "listing_area_m2", "listing_zone", "listing_type", "cost_per_sqm",
     "lat", "lng",
+    "road_distance_m", "road_type", "slope_pct", "slope_class",
     "district", "municipality",
     "parcel_number", "sheet", "plan", "block", "parcel_area_m2",
     "planning_zone", "planning_zone_desc",
@@ -349,11 +530,21 @@ def main():
             if done % 50 == 0 or done == len(with_coords):
                 print(f"  Enriched {done}/{len(with_coords)}")
 
-    # Step 4: Compute derived metrics
+    # Step 4: Batch terrain slope via Open-Meteo
+    print("\nComputing terrain slopes...")
+    compute_slopes(with_coords)
+    slopes_done = sum(1 for a in with_coords if a.get("slope_pct") is not None)
+    print(f"  Slopes computed for {slopes_done}/{len(with_coords)} ads")
+
+    # Step 5: Road proximity (bulk OSM download + local computation)
+    print("\nComputing road distances...")
+    compute_road_distances(with_coords)
+
+    # Step 6: Compute derived metrics
     for ad in ads:
         compute_cost_per_sqm(ad)
 
-    # Step 5: Write CSV
+    # Step 7: Write CSV
     write_csv(ads, OUTPUT_FILE)
 
 

@@ -23,7 +23,7 @@ def load_data():
     df = pd.read_csv(CSV_PATH)
     for col in ("price_numeric", "listing_area_m2", "parcel_area_m2", "cost_per_sqm",
                 "hosting_capacity_mw", "res_total_mw", "available_capacity_mw",
-                "lat", "lng"):
+                "lat", "lng", "road_distance_m", "slope_pct"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     if "listing_area_m2" in df.columns:
@@ -88,6 +88,22 @@ max_cost = st.sidebar.slider(
     step=10,
 )
 
+max_road_dist = st.sidebar.slider(
+    "Max distance to road (m)",
+    min_value=0,
+    max_value=500,
+    value=200,
+    step=25,
+)
+
+max_slope = st.sidebar.slider(
+    "Max terrain slope (%)",
+    min_value=0,
+    max_value=30,
+    value=15,
+    step=1,
+)
+
 districts = sorted(df_raw["district"].dropna().unique())
 selected_districts = st.sidebar.multiselect(
     "Districts", districts, default=districts
@@ -106,6 +122,10 @@ df = df[df["area_m2"].notna() & (df["area_m2"] >= min_area)]
 df = df[df["cost_per_sqm"].notna() & (df["cost_per_sqm"] <= max_cost)]
 df = df[df["district"].isin(selected_districts)]
 df = df[df["planning_zone"].isin(selected_zones)]
+if "road_distance_m" in df.columns:
+    df = df[df["road_distance_m"].isna() | (df["road_distance_m"] <= max_road_dist)]
+if "slope_pct" in df.columns:
+    df = df[df["slope_pct"].isna() | (df["slope_pct"] <= max_slope)]
 df = df.sort_values("cost_per_sqm", ascending=True).reset_index(drop=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -134,6 +154,12 @@ if len(df) > 0:
     map_df["tip_area"] = map_df["area_m2"].apply(lambda v: f"{v:,.0f} m²" if pd.notna(v) else "—")
     map_df["tip_cpsm"] = map_df["cost_per_sqm"].apply(lambda v: f"€{v:,.2f}" if pd.notna(v) else "—")
     map_df["tip_cap"] = map_df["available_capacity_mw"].apply(lambda v: f"{v:.1f} MW" if pd.notna(v) else "—")
+    map_df["tip_road"] = map_df.apply(
+        lambda r: f"{int(r['road_distance_m'])}m ({r.get('road_type', '')})"
+        if pd.notna(r.get("road_distance_m")) else "—", axis=1)
+    map_df["tip_slope"] = map_df.apply(
+        lambda r: f"{r['slope_pct']}% ({r.get('slope_class', '')})"
+        if pd.notna(r.get("slope_pct")) else "—", axis=1)
 
     layer = pdk.Layer(
         "ScatterplotLayer",
@@ -152,7 +178,8 @@ if len(df) > 0:
             "Cost per m²: <b>{tip_cpsm}</b><br/>"
             "Zone: {planning_zone}<br/>"
             "Substation: {substation_en}<br/>"
-            "Available capacity: {tip_cap}"
+            "Available capacity: {tip_cap}<br/>"
+            "Road: {tip_road} | Slope: {tip_slope}"
         ),
         "style": {"backgroundColor": "#1a1a2e", "color": "white", "fontSize": "13px"},
     }
@@ -178,18 +205,21 @@ else:
 st.subheader(f"Ranked Results ({len(df)} plots)")
 
 if len(df) > 0:
-    df["est_land_cost"] = df["cost_per_sqm"] * required_area
-
     display_cols = [
         "url", "location", "price_numeric", "area_m2",
-        "cost_per_sqm", "est_land_cost", "planning_zone",
-        "substation_en", "available_capacity_mw",
+        "cost_per_sqm",
+        "road_distance_m", "slope_pct", "slope_class",
+        "planning_zone", "substation_en", "available_capacity_mw",
     ]
+    for c in display_cols:
+        if c not in df.columns:
+            df[c] = ""
     display_df = df[display_cols].copy()
     display_df.columns = [
         "Link", "Location", "Price (€)", "Area (m²)",
-        "€/m²", f"Est. Cost ({park_label})", "Zone",
-        "Substation", "Available MW",
+        "€/m²",
+        "Road (m)", "Slope %", "Terrain",
+        "Zone", "Substation", "Available MW",
     ]
 
     st.dataframe(
@@ -201,7 +231,8 @@ if len(df) > 0:
             "Price (€)": st.column_config.NumberColumn(format="€%d"),
             "Area (m²)": st.column_config.NumberColumn(format="%d m²"),
             "€/m²": st.column_config.NumberColumn(format="€%.2f"),
-            f"Est. Cost ({park_label})": st.column_config.NumberColumn(format="€%,.0f"),
+            "Road (m)": st.column_config.NumberColumn(format="%d m"),
+            "Slope %": st.column_config.NumberColumn(format="%.1f%%"),
             "Available MW": st.column_config.NumberColumn(format="%.1f MW"),
         },
     )
