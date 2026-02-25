@@ -1,0 +1,5 @@
+curl_cffi
+requests
+streamlit
+pandas
+pydeck
