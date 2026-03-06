@@ -6,7 +6,6 @@ Loads bazaraki_land.csv and helps identify viable plots for a 1 MW solar park.
 
 import pathlib
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
 
 CSV_PATH = pathlib.Path(__file__).parent / "bazaraki_land.csv"
@@ -147,57 +146,8 @@ else:
 st.subheader("Map")
 
 if len(df) > 0:
-    df["color"] = [[30, 200, 80, 200]] * len(df)
-
-    map_df = df.copy()
-    map_df["tip_price"] = map_df["price_numeric"].apply(lambda v: f"€{v:,.0f}" if pd.notna(v) else "—")
-    map_df["tip_area"] = map_df["area_m2"].apply(lambda v: f"{v:,.0f} m²" if pd.notna(v) else "—")
-    map_df["tip_cpsm"] = map_df["cost_per_sqm"].apply(lambda v: f"€{v:,.2f}" if pd.notna(v) else "—")
-    map_df["tip_cap"] = map_df["available_capacity_mw"].apply(lambda v: f"{v:.1f} MW" if pd.notna(v) else "—")
-    map_df["tip_road"] = map_df.apply(
-        lambda r: f"{int(r['road_distance_m'])}m ({r.get('road_type', '')})"
-        if pd.notna(r.get("road_distance_m")) else "—", axis=1)
-    map_df["tip_slope"] = map_df.apply(
-        lambda r: f"{r['slope_pct']}% ({r.get('slope_class', '')})"
-        if pd.notna(r.get("slope_pct")) else "—", axis=1)
-
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=map_df,
-        get_position=["lng", "lat"],
-        get_fill_color="color",
-        get_radius=300,
-        pickable=True,
-        auto_highlight=True,
-    )
-
-    tooltip = {
-        "html": (
-            "<b>{location}</b><br/>"
-            "Price: {tip_price} | Area: {tip_area}<br/>"
-            "Cost per m²: <b>{tip_cpsm}</b><br/>"
-            "Zone: {planning_zone}<br/>"
-            "Substation: {substation_en}<br/>"
-            "Available capacity: {tip_cap}<br/>"
-            "Road: {tip_road} | Slope: {tip_slope}"
-        ),
-        "style": {"backgroundColor": "#1a1a2e", "color": "white", "fontSize": "13px"},
-    }
-
-    center_lat = df["lat"].mean()
-    center_lng = df["lng"].mean()
-
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer],
-        initial_view_state=pdk.ViewState(
-            latitude=center_lat,
-            longitude=center_lng,
-            zoom=8.5,
-            pitch=0,
-        ),
-        tooltip=tooltip,
-    ), height=400)
-    st.caption("Hover over a dot for details. Use the table below to open listings.")
+    map_df = df[["lat", "lng"]].dropna().rename(columns={"lng": "lon"})
+    st.map(map_df, use_container_width=True)
 else:
     st.info("No plots match the current filters. Try relaxing the criteria.")
 
@@ -205,8 +155,13 @@ else:
 st.subheader(f"Ranked Results ({len(df)} plots)")
 
 if len(df) > 0:
+    # Map link: open in Google Maps
+    df["map_link"] = df.apply(
+        lambda r: f"https://www.google.com/maps?q={r['lat']},{r['lng']}" if pd.notna(r.get("lat")) and pd.notna(r.get("lng")) else "",
+        axis=1,
+    )
     display_cols = [
-        "url", "location", "price_numeric", "area_m2",
+        "url", "map_link", "location", "price_numeric", "area_m2",
         "cost_per_sqm",
         "road_distance_m", "slope_pct", "slope_class",
         "planning_zone", "substation_en", "available_capacity_mw",
@@ -216,7 +171,7 @@ if len(df) > 0:
             df[c] = ""
     display_df = df[display_cols].copy()
     display_df.columns = [
-        "Link", "Location", "Price (€)", "Area (m²)",
+        "Listing", "Map", "Location", "Price (€)", "Area (m²)",
         "€/m²",
         "Road (m)", "Slope %", "Terrain",
         "Zone", "Substation", "Available MW",
@@ -227,7 +182,8 @@ if len(df) > 0:
         width="stretch",
         hide_index=True,
         column_config={
-            "Link": st.column_config.LinkColumn("Link", display_text="Open"),
+            "Listing": st.column_config.LinkColumn("Listing", display_text="Open"),
+            "Map": st.column_config.LinkColumn("Map", display_text="Map"),
             "Price (€)": st.column_config.NumberColumn(format="€%d"),
             "Area (m²)": st.column_config.NumberColumn(format="%d m²"),
             "€/m²": st.column_config.NumberColumn(format="€%.2f"),

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Parcel 190 — Sheet 47, Plan 41, Vasa Koilaniou</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { width: 100%; height: 100vh; }
+    .info-box {
+      position: absolute; top: 12px; right: 12px; z-index: 1000;
+      background: rgba(255,255,255,0.95); border-radius: 8px;
+      padding: 14px 18px; font-family: system-ui, sans-serif;
+      font-size: 13px; line-height: 1.6; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      max-width: 260px;
+    }
+    .info-box h3 { margin: 0 0 8px; font-size: 15px; }
+    .info-box .label { color: #666; }
+    .info-box .value { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="info-box">
+    <h3>Parcel 190</h3>
+    <div><span class="label">District:</span> <span class="value">Lemesos (Limassol)</span></div>
+    <div><span class="label">Municipality:</span> <span class="value">Vasa Koilaniou</span></div>
+    <div><span class="label">Sheet / Plan:</span> <span class="value">47 / 41</span></div>
+    <div><span class="label">Block:</span> <span class="value">0</span></div>
+    <div><span class="label">Area:</span> <span class="value">~1,314 m²</span></div>
+  </div>
+  <script>
+    var parcelCoords = [
+      [34.824629093419738, 32.798770030691081],
+      [34.824415427753578, 32.798755395980457],
+      [34.824226353003624, 32.798674960485201],
+      [34.824110622746268, 32.798612310545742],
+      [34.824155319702932, 32.798458943132523],
+      [34.824436141646132, 32.798569837314702],
+      [34.824557760106885, 32.798612821444202],
+      [34.824634634133623, 32.798594844286818],
+      [34.824644072547862, 32.798552500829238],
+      [34.82487132721387,  32.798555456534181],
+      [34.824890943666489, 32.798656175193109],
+      [34.824629093419738, 32.798770030691081]
+    ];
+
+    var map = L.map('map').setView([34.8246, 32.7987], 18);
+
+    // DLS Cadastral Map as the main layer (same as ArcGIS viewer)
+    var dlsLayer = L.esri.dynamicMapLayer({
+      url: 'https://eservices.dls.moi.gov.cy/arcgis/rest/services/National/CadastralMap_EN/MapServer',
+      opacity: 1,
+      useCors: true
+    }).addTo(map);
+
+    // Esri topographic basemap underneath for when DLS tiles don't cover
+    var topoBase = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Esri | DLS Cyprus', maxZoom: 20 }
+    ).addTo(map);
+
+    // Satellite as alternate base
+    var satellite = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Esri World Imagery', maxZoom: 20 }
+    );
+
+    L.control.layers({
+      'DLS Cadastral + Topo': topoBase,
+      'Satellite': satellite
+    }).addTo(map);
+
+    // Highlighted parcel polygon
+    var parcel = L.polygon(parcelCoords, {
+      color: '#ff0000',
+      weight: 4,
+      fillColor: '#ff0000',
+      fillOpacity: 0.3
+    }).addTo(map);
+
+    parcel.bindPopup(
+      '<b>Parcel 190</b><br>Sheet 47 / Plan 41<br>Vasa Koilaniou, Limassol<br>~1,314 m²'
+    );
+
+    map.fitBounds(parcel.getBounds().pad(1.5));
+  </script>
+</body>
+</html>

@@ -312,8 +312,27 @@ def _load_cyprus_roads():
         f'(._;>;);out body qt;'
     )
     print("  Downloading Cyprus road network from OSM (one-time)...")
-    resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=180)
-    data = resp.json()
+    for attempt in range(3):
+        try:
+            resp = requests.post(OVERPASS_URL, data={"data": query}, timeout=180)
+            data = resp.json()
+            if data.get("elements"):
+                break
+            print(f"  Attempt {attempt+1}: empty response, retrying in 30s...")
+            time.sleep(30)
+        except Exception as e:
+            print(f"  Attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                print("  Retrying in 30s...")
+                time.sleep(30)
+            else:
+                print("  WARNING: Could not download road data. Skipping road distances.")
+                _road_cache = (np.array([]), np.array([]), [])
+                return _road_cache
+    else:
+        print("  WARNING: No road data after 3 attempts. Skipping.")
+        _road_cache = (np.array([]), np.array([]), [])
+        return _road_cache
 
     nodes = {}
     way_nodes = {}  # node_id -> highway type
@@ -363,15 +382,18 @@ def compute_road_distances(ads):
             print(f"  Road distances: {i+1}/{len(to_process)}")
 
 
-# ── Terrain slope (Open-Meteo elevation API) ────────────────────────────────
+# ── Terrain slope (elevation APIs) ────────────────────────────────────────────
 OPEN_METEO_ELEV_URL = "https://api.open-meteo.com/v1/elevation"
+OPEN_ELEVATION_URL = "https://api.open-elevation.com/api/v1/lookup"
 SLOPE_SAMPLE_OFFSET = 0.001  # ~111m at equator, ~91m at 35°N
 
 
-def _batch_elevations(coords):
-    """Fetch elevations for a list of (lat, lng) tuples. Returns list of floats."""
+def _fetch_elevations_open_meteo(coords):
+    """Try Open-Meteo first (fast, but rate-limited)."""
     elevations = []
-    for i in range(0, len(coords), 100):
+    total_batches = (len(coords) + 99) // 100
+    failures = 0
+    for batch_idx, i in enumerate(range(0, len(coords), 100)):
         chunk = coords[i:i + 100]
         lats = ",".join(f"{c[0]:.6f}" for c in chunk)
         lngs = ",".join(f"{c[1]:.6f}" for c in chunk)
@@ -379,13 +401,62 @@ def _batch_elevations(coords):
             resp = requests.get(
                 OPEN_METEO_ELEV_URL,
                 params={"latitude": lats, "longitude": lngs},
-                timeout=15,
+                timeout=30,
             )
             data = resp.json()
-            elevations.extend(data.get("elevation", [None] * len(chunk)))
+            if data.get("error"):
+                return None  # rate-limited or error — fall back
+            batch_elevs = data.get("elevation", [None] * len(chunk))
+            elevations.extend(batch_elevs)
         except Exception:
-            elevations.extend([None] * len(chunk))
+            return None
+        if (batch_idx + 1) % 50 == 0:
+            print(f"    Elevation batch {batch_idx+1}/{total_batches}")
+        time.sleep(0.1)
+    print(f"    Elevation batch {total_batches}/{total_batches}")
     return elevations
+
+
+def _fetch_elevations_open_elevation(coords):
+    """Fallback: Open-Elevation API (no rate limit, slower)."""
+    elevations = []
+    chunk_size = 50
+    total_batches = (len(coords) + chunk_size - 1) // chunk_size
+    failures = 0
+    for batch_idx, i in enumerate(range(0, len(coords), chunk_size)):
+        chunk = coords[i:i + chunk_size]
+        locations = [{"latitude": float(c[0]), "longitude": float(c[1])} for c in chunk]
+        try:
+            resp = requests.post(
+                OPEN_ELEVATION_URL,
+                json={"locations": locations},
+                timeout=60,
+            )
+            data = resp.json()
+            results = data.get("results", [])
+            batch_elevs = [r.get("elevation") for r in results]
+            if len(batch_elevs) < len(chunk):
+                batch_elevs.extend([None] * (len(chunk) - len(batch_elevs)))
+            elevations.extend(batch_elevs)
+        except Exception:
+            failures += 1
+            elevations.extend([None] * len(chunk))
+        if (batch_idx + 1) % 50 == 0 or batch_idx == total_batches - 1:
+            print(f"    Elevation batch {batch_idx+1}/{total_batches} "
+                  f"(open-elevation, failures: {failures})")
+        time.sleep(0.2)
+    return elevations
+
+
+def _batch_elevations(coords):
+    """Fetch elevations for a list of (lat, lng) tuples. Returns list of floats.
+    Tries Open-Meteo first (fast), falls back to Open-Elevation (no limit)."""
+    print("    Trying Open-Meteo API...")
+    result = _fetch_elevations_open_meteo(coords)
+    if result is not None:
+        return result
+    print("    Open-Meteo rate-limited, falling back to Open-Elevation API...")
+    return _fetch_elevations_open_elevation(coords)
 
 
 def compute_slopes(ads):
@@ -491,61 +562,214 @@ def write_csv(ads, filename):
     print(f"\nCSV written to {filename} ({len(ads)} rows)")
 
 
+def load_csv(filename):
+    """Load existing CSV into a list of dicts keyed by ad id."""
+    path = Path(filename)
+    if not path.exists():
+        return {}
+    existing = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            for key in ("lat", "lng"):
+                if row.get(key):
+                    try:
+                        row[key] = float(row[key])
+                    except ValueError:
+                        row[key] = None
+                else:
+                    row[key] = None
+            for key in ("listing_area_m2", "parcel_area_m2", "road_distance_m",
+                         "price_numeric", "parcel_number", "block"):
+                if row.get(key):
+                    try:
+                        row[key] = int(float(row[key]))
+                    except (ValueError, TypeError):
+                        pass
+            if row.get("slope_pct"):
+                try:
+                    row["slope_pct"] = float(row["slope_pct"])
+                except (ValueError, TypeError):
+                    pass
+            if row.get("cost_per_sqm"):
+                try:
+                    row["cost_per_sqm"] = float(row["cost_per_sqm"])
+                except (ValueError, TypeError):
+                    pass
+            existing[row["id"]] = row
+    return existing
+
+
+def _needs_field(ad, field):
+    """Check if an ad is missing a field (empty string or absent)."""
+    v = ad.get(field)
+    return v is None or v == ""
+
+
+def _needs_enrichment(ad):
+    return ad.get("lat") is not None and _needs_field(ad, "district")
+
+
+def _needs_slope(ad):
+    return ad.get("lat") is not None and _needs_field(ad, "slope_pct")
+
+
+def _needs_road(ad):
+    return ad.get("lat") is not None and _needs_field(ad, "road_distance_m")
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 def main():
-    # Step 1: Scrape all listings
+    # Ensure output appears immediately when run from Cursor or other non-TTY
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Scrape Bazaraki land listings")
+    parser.add_argument("--full", action="store_true",
+                        help="Full run from scratch (default: incremental if CSV exists)")
+    args = parser.parse_args()
+
+    existing = {} if args.full else load_csv(OUTPUT_FILE)
+    incremental = bool(existing) and not args.full
+
+    if incremental:
+        print(f"Incremental mode: {len(existing)} existing ads loaded from {OUTPUT_FILE}")
+    else:
+        print("Full mode: scraping everything from scratch")
+
+    # ── Step 1: Scrape all listing pages ──────────────────────────────────
     ads = scrape_all_listings()
+    current_ids = {a["id"] for a in ads}
 
-    # Step 2: Extract coordinates + listing details from each ad page
-    print("\nExtracting details from individual ad pages...")
-    for i, ad in enumerate(ads):
-        details = extract_details_from_ad(ad)
-        ad.update(details)
-        lat = ad.get("lat")
-        area = ad.get("listing_area_m2", "")
-        status = f"({lat:.6f}, {ad['lng']:.6f})" if lat else "(no coords)"
-        print(f"  [{i+1}/{len(ads)}] {ad['id']} {status} area={area}m²")
-        if i < len(ads) - 1:
-            time.sleep(DELAY_BETWEEN_ADS)
+    if incremental:
+        new_ads = [a for a in ads if a["id"] not in existing]
+        removed_ids = set(existing.keys()) - current_ids
+        kept = [existing[aid] for aid in current_ids if aid in existing]
+        print(f"\nNew ads: {len(new_ads)}")
+        print(f"Removed/expired: {len(removed_ids)}")
+        print(f"Unchanged: {len(kept)}")
 
-    with_coords = [a for a in ads if a.get("lat") is not None]
-    print(f"\nAds with coordinates: {len(with_coords)}/{len(ads)}")
+        # Update prices on existing ads
+        listing_by_id = {a["id"]: a for a in ads}
+        price_changes = 0
+        for old in kept:
+            fresh = listing_by_id.get(old["id"])
+            if fresh and fresh.get("price") and fresh["price"] != old.get("price"):
+                old["price"] = fresh["price"]
+                compute_cost_per_sqm(old)
+                price_changes += 1
+        if price_changes:
+            print(f"Price updates: {price_changes}")
 
-    # Step 3: Enrich with substation + DLS data
-    print("\nFetching substation names...")
-    subst_names = get_substation_names()
-    print(f"Loaded {len(subst_names)} substations")
+        # ── Step 2: Fetch details for new ads ─────────────────────────────
+        if new_ads:
+            print(f"\nExtracting details for {len(new_ads)} new ads...")
+            for i, ad in enumerate(new_ads):
+                details = extract_details_from_ad(ad)
+                ad.update(details)
+                lat = ad.get("lat")
+                area = ad.get("listing_area_m2", "")
+                status = f"({lat:.6f}, {ad['lng']:.6f})" if lat else "(no coords)"
+                print(f"  [{i+1}/{len(new_ads)}] {ad['id']} {status} area={area}m²")
+                if i < len(new_ads) - 1:
+                    time.sleep(DELAY_BETWEEN_ADS)
 
-    print(f"\nEnriching {len(with_coords)} ads with ArcGIS data...")
-    with ThreadPoolExecutor(max_workers=ARCGIS_WORKERS) as pool:
-        futures = {pool.submit(enrich_ad, ad, subst_names): ad for ad in with_coords}
-        done = 0
-        for future in as_completed(futures):
-            done += 1
-            ad = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"  WARNING: enrichment failed for {ad['id']}: {e}")
-            if done % 50 == 0 or done == len(with_coords):
-                print(f"  Enriched {done}/{len(with_coords)}")
+        all_ads = kept + new_ads
+    else:
+        # ── Step 2: Fetch details for ALL ads ─────────────────────────────
+        print("\nExtracting details from individual ad pages...")
+        for i, ad in enumerate(ads):
+            details = extract_details_from_ad(ad)
+            ad.update(details)
+            lat = ad.get("lat")
+            area = ad.get("listing_area_m2", "")
+            status = f"({lat:.6f}, {ad['lng']:.6f})" if lat else "(no coords)"
+            print(f"  [{i+1}/{len(ads)}] {ad['id']} {status} area={area}m²")
+            if i < len(ads) - 1:
+                time.sleep(DELAY_BETWEEN_ADS)
+        all_ads = ads
 
-    # Step 4: Batch terrain slope via Open-Meteo
-    print("\nComputing terrain slopes...")
-    compute_slopes(with_coords)
-    slopes_done = sum(1 for a in with_coords if a.get("slope_pct") is not None)
-    print(f"  Slopes computed for {slopes_done}/{len(with_coords)} ads")
+    with_coords = [a for a in all_ads if a.get("lat") is not None]
+    print(f"\nAds with coordinates: {len(with_coords)}/{len(all_ads)}")
 
-    # Step 5: Road proximity (bulk OSM download + local computation)
-    print("\nComputing road distances...")
-    compute_road_distances(with_coords)
+    # Save after details — never lose scraping work
+    write_csv(all_ads, OUTPUT_FILE)
+    print("(Progress saved)")
 
-    # Step 6: Compute derived metrics
-    for ad in ads:
+    # ── Step 3: DLS + Substation enrichment ───────────────────────────────
+    needs_enrich = [a for a in all_ads if _needs_enrichment(a)]
+    if needs_enrich:
+        print(f"\nFetching substation names...")
+        subst_names = get_substation_names()
+        print(f"Loaded {len(subst_names)} substations")
+
+        print(f"\nEnriching {len(needs_enrich)} ads with ArcGIS data...")
+        with ThreadPoolExecutor(max_workers=ARCGIS_WORKERS) as pool:
+            futures = {pool.submit(enrich_ad, ad, subst_names): ad for ad in needs_enrich}
+            done = 0
+            for future in as_completed(futures):
+                done += 1
+                ad = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"  WARNING: enrichment failed for {ad['id']}: {e}")
+                if done % 50 == 0 or done == len(needs_enrich):
+                    print(f"  Enriched {done}/{len(needs_enrich)}")
+
+        write_csv(all_ads, OUTPUT_FILE)
+        print("(Progress saved)")
+    else:
+        print("\nAll ads already enriched — skipping.")
+
+    # ── Step 4: Terrain slopes ────────────────────────────────────────────
+    needs_slope = [a for a in all_ads if _needs_slope(a)]
+    if needs_slope:
+        print(f"\nComputing terrain slopes for {len(needs_slope)} ads...")
+        try:
+            compute_slopes(needs_slope)
+            slopes_done = sum(1 for a in needs_slope if isinstance(a.get("slope_pct"), (int, float)))
+            print(f"  Slopes computed for {slopes_done}/{len(needs_slope)} ads")
+        except Exception as e:
+            print(f"  WARNING: Slope computation failed: {e}")
+
+        write_csv(all_ads, OUTPUT_FILE)
+        print("(Progress saved)")
+    else:
+        print("\nAll ads already have slopes — skipping.")
+
+    # ── Step 5: Road distances ────────────────────────────────────────────
+    needs_road = [a for a in all_ads if _needs_road(a)]
+    if needs_road:
+        print(f"\nComputing road distances for {len(needs_road)} ads...")
+        try:
+            compute_road_distances(needs_road)
+        except Exception as e:
+            print(f"  WARNING: Road distance computation failed: {e}")
+
+        write_csv(all_ads, OUTPUT_FILE)
+        print("(Progress saved)")
+    else:
+        print("\nAll ads already have road distances — skipping.")
+
+    # ── Step 6: Derived metrics ───────────────────────────────────────────
+    for ad in all_ads:
         compute_cost_per_sqm(ad)
 
-    # Step 7: Write CSV
-    write_csv(ads, OUTPUT_FILE)
+    write_csv(all_ads, OUTPUT_FILE)
+
+    # ── Completeness summary ──────────────────────────────────────────────
+    with_coords = [a for a in all_ads if a.get("lat") is not None]
+    missing_district = sum(1 for a in with_coords if _needs_field(a, "district"))
+    missing_slope = sum(1 for a in with_coords if _needs_field(a, "slope_pct"))
+    missing_road = sum(1 for a in with_coords if _needs_field(a, "road_distance_m"))
+    print("\n--- Completeness ---")
+    print(f"Listings: {len(all_ads)} total, {len(with_coords)} with coordinates")
+    print(f"Missing district (DLS): {missing_district}")
+    print(f"Missing slope: {missing_slope}")
+    print(f"Missing road distance: {missing_road}")
+    print("\nDone!")
 
 
 if __name__ == "__main__":

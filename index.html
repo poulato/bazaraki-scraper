@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solar Park Land Finder</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1c25;
+  --surface2: #22252f;
+  --border: #2e313d;
+  --text: #e6e6e9;
+  --text-dim: #8b8fa3;
+  --accent: #f5a623;
+  --green: #2ecc71;
+  --red: #e74c3c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar {
+  width: 320px; min-width: 320px; background: var(--surface); border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px;
+}
+.sidebar h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: 4px; }
+.sidebar label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.sidebar input[type="range"] { width: 100%; accent-color: var(--accent); }
+.range-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); }
+/* Checkbox dropdown */
+.cb-dropdown { position: relative; }
+.cb-dropdown .cb-toggle {
+  width: 100%; background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 7px 10px; font-size: 12px; cursor: pointer; text-align: left;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.cb-dropdown .cb-toggle:hover { border-color: var(--accent); }
+.cb-dropdown .cb-toggle .arrow { font-size: 10px; color: var(--text-dim); }
+.cb-dropdown .cb-panel {
+  display: none; position: absolute; left: 0; right: 0; top: 100%; z-index: 100;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 0 0 6px 6px;
+  max-height: 260px; overflow: hidden; flex-direction: column;
+}
+.cb-dropdown.open .cb-panel { display: flex; }
+.cb-actions { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
+.cb-actions button {
+  flex: 1; padding: 6px; font-size: 11px; background: transparent; border: none;
+  color: var(--accent); cursor: pointer;
+}
+.cb-actions button:hover { background: var(--surface); }
+.cb-search {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+}
+.cb-search input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+  padding: 4px 8px; font-size: 11px; color: var(--text); outline: none;
+}
+.cb-search input:focus { border-color: var(--accent); }
+.cb-list { overflow-y: auto; flex: 1; max-height: 190px; }
+.cb-list label {
+  display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; margin: 0;
+  color: var(--text);
+}
+.cb-list label:hover { background: var(--surface); }
+.cb-list input[type="checkbox"] { accent-color: var(--accent); }
+.calc-box { background: var(--surface2); border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.7; }
+.calc-box strong { color: var(--accent); }
+.tip { position: relative; border-bottom: 1px dashed var(--text-dim); cursor: help; }
+.tip .tiptext {
+  display: none; position: fixed; z-index: 9999;
+  background: #000; color: #ddd; font-size: 11px; font-weight: 400; padding: 8px 12px;
+  border-radius: 4px; white-space: normal; width: 240px; line-height: 1.5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.6); text-align: left; pointer-events: none;
+}
+.divider { border-top: 1px solid var(--border); }
+.unit-toggle { display: flex; gap: 0; }
+.unit-toggle button {
+  flex: 1; padding: 6px; font-size: 12px; border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text-dim); cursor: pointer; transition: all .15s;
+}
+.unit-toggle button:first-child { border-radius: 4px 0 0 4px; }
+.unit-toggle button:last-child { border-radius: 0 4px 4px 0; }
+.unit-toggle button.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+
+/* Main */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.header { padding: 16px 24px 0; }
+.header h1 { font-size: 22px; font-weight: 700; }
+.header .subtitle { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+
+/* Metrics */
+.metrics { display: flex; gap: 16px; padding: 16px 24px; }
+.metric-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 20px; min-width: 160px;
+}
+.metric-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; }
+.metric-card .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+
+/* Map */
+#map { height: 350px; margin: 0 24px; border-radius: 8px; border: 1px solid var(--border); }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; margin: 16px 24px 0; }
+.tabs button {
+  padding: 8px 20px; font-size: 13px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-dim); cursor: pointer; transition: all .15s;
+}
+.tabs button:first-child { border-radius: 6px 0 0 6px; }
+.tabs button:last-child { border-radius: 0 6px 6px 0; }
+.tabs button.active { background: var(--surface2); color: var(--text); border-color: var(--accent); }
+
+/* Table */
+.table-wrap { flex: 1; overflow: auto; margin: 0 24px 16px; border: 1px solid var(--border); border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead { position: sticky; top: 0; z-index: 2; }
+th {
+  background: var(--surface2); padding: 10px 12px; text-align: left; font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap;
+}
+th:hover { color: var(--accent); }
+th .sort-arrow { margin-left: 4px; font-size: 10px; }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:hover td { background: var(--surface2); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Clickable substation rows */
+#substations-table tbody tr { cursor: pointer; }
+#substations-table tbody tr:hover td { background: var(--accent); color: #000; }
+
+/* Substation filter banner */
+.sub-filter-banner {
+  display: none; margin: 0 24px; padding: 8px 14px; background: var(--accent); color: #000;
+  border-radius: 6px; font-size: 13px; font-weight: 600;
+  align-items: center; justify-content: space-between;
+}
+.sub-filter-banner.active { display: flex; }
+.sub-filter-banner button {
+  background: rgba(0,0,0,0.2); border: none; color: #000; padding: 3px 10px;
+  border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;
+}
+.sub-filter-banner button:hover { background: rgba(0,0,0,0.35); }
+
+/* Loading */
+.loading { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 16px; color: var(--text-dim); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div>
+    <h2>Solar Park Size</h2>
+    <label>Unit</label>
+    <div class="unit-toggle">
+      <button id="btn-kw" onclick="setUnit('kW')">kW</button>
+      <button id="btn-mw" class="active" onclick="setUnit('MW')">MW</button>
+    </div>
+  </div>
+  <div id="size-slider-wrap"></div>
+  <div class="calc-box" id="calc-box"></div>
+  <div class="divider"></div>
+  <div>
+    <h2>Filters</h2>
+    <label>Min parcel area (m²)</label>
+    <input type="range" id="f-area" min="0" max="50000" step="500" value="12000">
+    <div class="range-row"><span id="f-area-val">12,000</span><span>m²</span></div>
+  </div>
+  <div>
+    <label>Max cost per m² (€)</label>
+    <input type="range" id="f-cost" min="0" max="2000" step="10" value="1580">
+    <div class="range-row"><span id="f-cost-val">1,580</span><span>€</span></div>
+  </div>
+  <div>
+    <label>Max distance to road (m)</label>
+    <input type="range" id="f-road" min="0" max="500" step="25" value="200">
+    <div class="range-row"><span id="f-road-val">200</span><span>m</span></div>
+  </div>
+  <div>
+    <label>Max terrain slope (%)</label>
+    <input type="range" id="f-slope" min="0" max="30" step="1" value="15">
+    <div class="range-row"><span id="f-slope-val">15</span><span>%</span></div>
+  </div>
+  <div>
+    <label>Min available grid capacity (MW)</label>
+    <input type="range" id="f-capacity" min="0" max="80" step="0.5" value="1">
+    <div class="range-row"><span id="f-capacity-val">1.0</span><span>MW</span></div>
+  </div>
+  <div>
+    <label>Districts</label>
+    <div class="cb-dropdown" id="dd-districts">
+      <div class="cb-toggle" onclick="toggleDropdown('dd-districts')"><span class="cb-summary">All selected</span><span class="arrow">▼</span></div>
+      <div class="cb-panel">
+        <div class="cb-actions"><button onclick="cbAll('dd-districts',true)">Select all</button><button onclick="cbAll('dd-districts',false)">Deselect all</button></div>
+        <div class="cb-list" id="cb-districts-list"></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <label>Planning zones</label>
+    <div class="cb-dropdown" id="dd-zones">
+      <div class="cb-toggle" onclick="toggleDropdown('dd-zones')"><span class="cb-summary">All selected</span><span class="arrow">▼</span></div>
+      <div class="cb-panel">
+        <div class="cb-actions"><button onclick="cbAll('dd-zones',true)">Select all</button><button onclick="cbAll('dd-zones',false)">Deselect all</button></div>
+        <div class="cb-search"><input type="text" placeholder="Search zones…" oninput="filterCbList('dd-zones', this.value)"></div>
+        <div class="cb-list" id="cb-zones-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="header">
+    <h1>☀️ Solar Park Land Finder</h1>
+    <div class="subtitle" id="subtitle"></div>
+  </div>
+  <div class="metrics">
+    <div class="metric-card"><div class="label">Matching plots</div><div class="value" id="m-count">—</div></div>
+    <div class="metric-card"><div class="label">Cheapest €/m²</div><div class="value" id="m-cheapest">—</div></div>
+    <div class="metric-card"><div class="label">Median €/m²</div><div class="value" id="m-median">—</div></div>
+  </div>
+  <div id="map"></div>
+  <div class="tabs">
+    <button class="active" onclick="showTab('results', this)">Results</button>
+    <button onclick="showTab('substations', this)">Substations</button>
+  </div>
+  <div class="sub-filter-banner" id="sub-filter-banner">
+    <span id="sub-filter-label"></span>
+    <button onclick="clearSubstationFilter()">✕ Clear</button>
+  </div>
+  <div class="table-wrap" id="table-wrap">
+    <div class="loading" id="loading-msg">Loading CSV data…</div>
+    <table id="results-table" style="display:none"><thead id="results-head"></thead><tbody id="results-body"></tbody></table>
+    <table id="substations-table" style="display:none"><thead id="sub-head"></thead><tbody id="sub-body"></tbody></table>
+  </div>
+</div>
+
+<script>
+const SQM_PER_KW = 12;
+let rawData = [];
+let filtered = [];
+let map, markerGroup;
+let unit = 'MW';
+let sortCol = 'cost_per_sqm';
+let sortAsc = true;
+let currentTab = 'results';
+let subSortCol = 'available_mw';
+let subSortAsc = false;
+let substationFilter = null;
+
+function num(v) { const n = parseFloat(v); return isNaN(n) ? null : n; }
+function fmt(n, d) { return n == null ? '—' : n.toLocaleString('en', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); }
+function fmtE(n, d) { return n == null ? '—' : '€' + fmt(n, d); }
+
+function initMap() {
+  map = L.map('map', { zoomControl: true }).setView([35.0, 33.2], 9);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    maxZoom: 19
+  }).addTo(map);
+  markerGroup = L.layerGroup().addTo(map);
+}
+
+function parkSizeMW() {
+  if (unit === 'MW') return num(document.getElementById('f-size-mw')?.value) || 1;
+  return (num(document.getElementById('f-size-kw')?.value) || 1000) / 1000;
+}
+
+function setUnit(u) {
+  unit = u;
+  document.getElementById('btn-kw').className = u === 'kW' ? 'active' : '';
+  document.getElementById('btn-mw').className = u === 'MW' ? 'active' : '';
+  renderSizeSlider();
+  applyFilters();
+}
+
+function renderSizeSlider() {
+  const wrap = document.getElementById('size-slider-wrap');
+  if (unit === 'MW') {
+    wrap.innerHTML = `<label>Target park size (MW)</label>
+      <input type="range" id="f-size-mw" min="0.1" max="2" step="0.1" value="1" oninput="applyFilters()">
+      <div class="range-row"><span id="f-size-val">1.0</span><span>MW</span></div>`;
+  } else {
+    wrap.innerHTML = `<label>Target park size (kW)</label>
+      <input type="range" id="f-size-kw" min="50" max="10000" step="50" value="1000" oninput="applyFilters()">
+      <div class="range-row"><span id="f-size-val">1,000</span><span>kW</span></div>`;
+  }
+}
+
+function populateSelects() {
+  const dists = [...new Set(rawData.map(r => r.district).filter(Boolean))].sort();
+  const zones = [...new Set(rawData.map(r => r.planning_zone).filter(Boolean))].sort();
+  populateCbDropdown('dd-districts', 'cb-districts-list', dists);
+  populateCbDropdown('dd-zones', 'cb-zones-list', zones);
+}
+
+function populateCbDropdown(ddId, listId, items) {
+  const list = document.getElementById(listId);
+  list.innerHTML = items.map(v =>
+    `<label data-val="${v}"><input type="checkbox" value="${v}" checked onchange="onCbChange('${ddId}')">${v}</label>`
+  ).join('');
+  updateCbSummary(ddId);
+}
+
+function toggleDropdown(ddId) {
+  const dd = document.getElementById(ddId);
+  dd.classList.toggle('open');
+}
+
+function cbAll(ddId, check) {
+  const dd = document.getElementById(ddId);
+  dd.querySelectorAll('.cb-list input[type="checkbox"]').forEach(cb => {
+    if (cb.closest('label').style.display !== 'none') cb.checked = check;
+  });
+  onCbChange(ddId);
+}
+
+function filterCbList(ddId, query) {
+  const dd = document.getElementById(ddId);
+  const q = query.toLowerCase();
+  dd.querySelectorAll('.cb-list label').forEach(lbl => {
+    lbl.style.display = lbl.dataset.val.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function onCbChange(ddId) {
+  updateCbSummary(ddId);
+  applyFilters();
+}
+
+function updateCbSummary(ddId) {
+  const dd = document.getElementById(ddId);
+  const all = dd.querySelectorAll('.cb-list input[type="checkbox"]');
+  const checked = dd.querySelectorAll('.cb-list input[type="checkbox"]:checked');
+  const summary = dd.querySelector('.cb-summary');
+  if (checked.length === all.length) summary.textContent = 'All selected';
+  else if (checked.length === 0) summary.textContent = 'None selected';
+  else summary.textContent = `${checked.length} of ${all.length} selected`;
+}
+
+function getCheckedValues(ddId) {
+  const dd = document.getElementById(ddId);
+  return [...dd.querySelectorAll('.cb-list input[type="checkbox"]:checked')].map(cb => cb.value);
+}
+
+function applyFilters() {
+  const mw = parkSizeMW();
+  const reqArea = Math.round(mw * 1000 * SQM_PER_KW);
+
+  const sizeVal = document.getElementById('f-size-val');
+  if (sizeVal) sizeVal.textContent = unit === 'MW' ? mw.toFixed(1) : fmt(mw * 1000);
+
+  const calc = document.getElementById('calc-box');
+  calc.innerHTML = `<strong>Requirements:</strong><br>` +
+    `<span class="tip">Grid capacity: <strong>${mw.toFixed(1)} MW</strong>` +
+    `<span class="tiptext">The minimum electrical grid capacity needed at the nearest substation to accept your solar park's output.</span></span><br>` +
+    `<span class="tip">Land needed: <strong>~${fmt(reqArea)} m²</strong> (${(reqArea/10000).toFixed(1)} ha)` +
+    `<span class="tiptext">Estimated at ~${SQM_PER_KW} m² per kW — accounts for panels, spacing between rows, access roads, and inverter/transformer area.</span></span>`;
+
+  const cap = num(document.getElementById('f-capacity').value);
+  const area = num(document.getElementById('f-area').value);
+  const cost = num(document.getElementById('f-cost').value);
+  const road = num(document.getElementById('f-road').value);
+  const slope = num(document.getElementById('f-slope').value);
+  const dists = getCheckedValues('dd-districts');
+  const zones = getCheckedValues('dd-zones');
+
+  document.getElementById('f-capacity-val').textContent = cap.toFixed(1);
+  document.getElementById('f-area-val').textContent = fmt(area);
+  document.getElementById('f-cost-val').textContent = fmt(cost);
+  document.getElementById('f-road-val').textContent = fmt(road);
+  document.getElementById('f-slope-val').textContent = fmt(slope);
+
+  const parkLabel = mw >= 1 ? mw.toFixed(1) + ' MW' : (mw * 1000).toFixed(0) + ' kW';
+  document.getElementById('subtitle').textContent = `Plots with at least ${parkLabel} of grid capacity and ~${fmt(reqArea)} m² of land.`;
+
+  const distSet = new Set(dists);
+  const zoneSet = new Set(zones);
+
+  filtered = rawData.filter(r => {
+    if (r.lat == null || r.lng == null) return false;
+    if (r.available_capacity_mw == null || r.available_capacity_mw < cap) return false;
+    if (r.area_m2 == null || r.area_m2 < area) return false;
+    if (r.cost_per_sqm == null || r.cost_per_sqm > cost) return false;
+    if (!distSet.has(r.district)) return false;
+    if (!zoneSet.has(r.planning_zone)) return false;
+    if (r.road_distance_m != null && r.road_distance_m > road) return false;
+    if (r.slope_pct != null && r.slope_pct > slope) return false;
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    const va = a.cost_per_sqm ?? Infinity;
+    const vb = b.cost_per_sqm ?? Infinity;
+    return va - vb;
+  });
+
+  updateMetrics();
+  updateMap();
+  renderCurrentTab();
+}
+
+function updateMetrics() {
+  document.getElementById('m-count').textContent = fmt(filtered.length);
+  if (filtered.length > 0) {
+    const costs = filtered.map(r => r.cost_per_sqm).filter(v => v != null).sort((a, b) => a - b);
+    document.getElementById('m-cheapest').textContent = fmtE(costs[0], 2);
+    document.getElementById('m-median').textContent = fmtE(costs[Math.floor(costs.length / 2)], 2);
+  } else {
+    document.getElementById('m-cheapest').textContent = '—';
+    document.getElementById('m-median').textContent = '—';
+  }
+}
+
+function getVisibleData() {
+  return substationFilter ? filtered.filter(r => r.substation_en === substationFilter) : filtered;
+}
+
+function updateMap() {
+  markerGroup.clearLayers();
+  const pts = getVisibleData().slice(0, 2000);
+  pts.forEach(r => {
+    const m = L.circleMarker([r.lat, r.lng], { radius: 5, color: '#f5a623', fillColor: '#f5a623', fillOpacity: 0.7, weight: 1 });
+    m.bindPopup(`
+      <b>${r.location || ''}</b><br>
+      Price: ${r.price || '—'} | Area: ${fmt(r.area_m2)} m²<br>
+      €/m²: <b>${fmtE(r.cost_per_sqm, 2)}</b><br>
+      Zone: ${r.planning_zone || '—'}<br>
+      Substation: ${r.substation_en || '—'}<br>
+      Capacity: ${r.available_capacity_mw != null ? r.available_capacity_mw.toFixed(1) + ' MW' : '—'}<br>
+      Road: ${r.road_distance_m != null ? r.road_distance_m + 'm' : '—'} | Slope: ${r.slope_pct != null ? r.slope_pct + '%' : '—'}<br>
+      <a href="${r.url}" target="_blank">Open listing</a>
+    `, { maxWidth: 300 });
+    markerGroup.addLayer(m);
+  });
+  if (pts.length > 0) {
+    const bounds = L.latLngBounds(pts.map(r => [r.lat, r.lng]));
+    map.fitBounds(bounds, { padding: [30, 30] });
+  }
+}
+
+function showTab(tab, btn) {
+  currentTab = tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('results-table').style.display = tab === 'results' ? '' : 'none';
+  document.getElementById('substations-table').style.display = tab === 'substations' ? '' : 'none';
+  renderCurrentTab();
+}
+
+function renderCurrentTab() {
+  if (currentTab === 'results') renderResults();
+  else renderSubstations();
+}
+
+const resCols = [
+  { key: 'url', label: 'Listing', type: 'link' },
+  { key: '_map', label: 'Map', type: 'maplink' },
+  { key: 'location', label: 'Location' },
+  { key: 'price_numeric', label: 'Price (€)', type: 'eur0' },
+  { key: 'area_m2', label: 'Area (m²)', type: 'num0', suffix: ' m²' },
+  { key: 'cost_per_sqm', label: '€/m²', type: 'eur2' },
+  { key: 'road_distance_m', label: 'Road (m)', type: 'num0', suffix: ' m' },
+  { key: 'slope_pct', label: 'Slope %', type: 'pct1' },
+  { key: 'slope_class', label: 'Terrain' },
+  { key: 'planning_zone', label: 'Zone' },
+  { key: 'substation_en', label: 'Substation' },
+  { key: 'available_capacity_mw', label: 'Available MW', type: 'num1', suffix: ' MW' },
+];
+
+function sortIcon(col, curCol, asc) {
+  if (col !== curCol) return '';
+  return `<span class="sort-arrow">${asc ? '▲' : '▼'}</span>`;
+}
+
+function renderResults() {
+  const head = document.getElementById('results-head');
+  head.innerHTML = '<tr>' + resCols.map(c =>
+    `<th onclick="sortResults('${c.key}')">${c.label}${sortIcon(c.key, sortCol, sortAsc)}</th>`
+  ).join('') + '</tr>';
+
+  let data = [...filtered];
+  if (substationFilter) data = data.filter(r => r.substation_en === substationFilter);
+  data.sort((a, b) => {
+    let va = sortCol === '_map' ? 0 : a[sortCol];
+    let vb = sortCol === '_map' ? 0 : b[sortCol];
+    if (va == null) va = sortAsc ? Infinity : -Infinity;
+    if (vb == null) vb = sortAsc ? Infinity : -Infinity;
+    if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  const body = document.getElementById('results-body');
+  const rows = data.slice(0, 500);
+  body.innerHTML = rows.map(r => '<tr>' + resCols.map(c => {
+    if (c.type === 'link') return `<td><a href="${r.url}" target="_blank">Open</a></td>`;
+    if (c.type === 'maplink') return `<td><a href="https://www.google.com/maps?q=${r.lat},${r.lng}" target="_blank">Map</a></td>`;
+    if (c.type === 'eur0') return `<td>${fmtE(r[c.key], 0)}</td>`;
+    if (c.type === 'eur2') return `<td>${fmtE(r[c.key], 2)}</td>`;
+    if (c.type === 'num0') return `<td>${r[c.key] != null ? fmt(r[c.key], 0) + (c.suffix || '') : '—'}</td>`;
+    if (c.type === 'num1') return `<td>${r[c.key] != null ? r[c.key].toFixed(1) + (c.suffix || '') : '—'}</td>`;
+    if (c.type === 'pct1') return `<td>${r[c.key] != null ? r[c.key].toFixed(1) + '%' : '—'}</td>`;
+    return `<td>${r[c.key] || '—'}</td>`;
+  }).join('') + '</tr>').join('');
+}
+
+function sortResults(col) {
+  if (sortCol === col) sortAsc = !sortAsc;
+  else { sortCol = col; sortAsc = true; }
+  renderResults();
+}
+
+function renderSubstations() {
+  const groups = {};
+  filtered.forEach(r => {
+    const k = r.substation_en || 'Unknown';
+    if (!groups[k]) groups[k] = { name: k, plots: 0, costs: [], available_mw: r.available_capacity_mw, total_mw: r.hosting_capacity_mw };
+    groups[k].plots++;
+    if (r.cost_per_sqm != null) groups[k].costs.push(r.cost_per_sqm);
+  });
+  let subs = Object.values(groups);
+  subs.forEach(s => {
+    s.costs.sort((a, b) => a - b);
+    s.median_cost = s.costs.length ? s.costs[Math.floor(s.costs.length / 2)] : null;
+  });
+
+  const subCols = [
+    { key: 'name', label: 'Substation' },
+    { key: 'plots', label: 'Plots', type: 'num0' },
+    { key: 'median_cost', label: 'Median €/m²', type: 'eur2' },
+    { key: 'available_mw', label: 'Available MW', type: 'num1', suffix: ' MW' },
+    { key: 'total_mw', label: 'Total MW', type: 'num1', suffix: ' MW' },
+  ];
+
+  const head = document.getElementById('sub-head');
+  head.innerHTML = '<tr>' + subCols.map(c =>
+    `<th onclick="sortSubs('${c.key}')">${c.label}${sortIcon(c.key, subSortCol, subSortAsc)}</th>`
+  ).join('') + '</tr>';
+
+  subs.sort((a, b) => {
+    let va = a[subSortCol], vb = b[subSortCol];
+    if (va == null) va = subSortAsc ? Infinity : -Infinity;
+    if (vb == null) vb = subSortAsc ? Infinity : -Infinity;
+    if (typeof va === 'string') return subSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return subSortAsc ? va - vb : vb - va;
+  });
+
+  const body = document.getElementById('sub-body');
+  body.innerHTML = subs.map(s => {
+    const escaped = s.name.replace(/'/g, "\\'");
+    return `<tr onclick="drillSubstation('${escaped}')" title="Click to see plots for ${s.name}">` + subCols.map(c => {
+      if (c.type === 'eur2') return `<td>${fmtE(s[c.key], 2)}</td>`;
+      if (c.type === 'num0') return `<td>${fmt(s[c.key])}</td>`;
+      if (c.type === 'num1') return `<td>${s[c.key] != null ? s[c.key].toFixed(1) + (c.suffix || '') : '—'}</td>`;
+      return `<td>${s[c.key] || '—'}</td>`;
+    }).join('') + '</tr>';
+  }).join('');
+}
+
+function drillSubstation(name) {
+  substationFilter = name;
+  document.getElementById('sub-filter-label').textContent = `Showing plots for Substation: ${name}`;
+  document.getElementById('sub-filter-banner').classList.add('active');
+  updateMap();
+  updateMetrics();
+  showTab('results', document.querySelector('.tabs button:first-child'));
+}
+
+function clearSubstationFilter() {
+  substationFilter = null;
+  document.getElementById('sub-filter-banner').classList.remove('active');
+  updateMap();
+  updateMetrics();
+  renderResults();
+}
+
+function sortSubs(col) {
+  if (subSortCol === col) subSortAsc = !subSortAsc;
+  else { subSortCol = col; subSortAsc = false; }
+  renderSubstations();
+}
+
+// Debounce filter inputs
+['f-capacity', 'f-area', 'f-cost', 'f-road', 'f-slope'].forEach(id => {
+  document.getElementById(id).addEventListener('input', debounce(applyFilters, 150));
+});
+// Close dropdowns when clicking outside
+// Position tooltips so they never clip outside the viewport
+document.addEventListener('mouseover', e => {
+  const tip = e.target.closest('.tip');
+  if (!tip) return;
+  const tt = tip.querySelector('.tiptext');
+  if (!tt) return;
+  tt.style.display = 'block';
+  const rect = tip.getBoundingClientRect();
+  let top = rect.top - tt.offsetHeight - 8;
+  let left = rect.left + rect.width / 2 - tt.offsetWidth / 2;
+  if (top < 4) top = rect.bottom + 8;
+  if (left < 4) left = 4;
+  if (left + tt.offsetWidth > window.innerWidth - 4) left = window.innerWidth - tt.offsetWidth - 4;
+  tt.style.top = top + 'px';
+  tt.style.left = left + 'px';
+});
+document.addEventListener('mouseout', e => {
+  const tip = e.target.closest('.tip');
+  if (!tip) return;
+  const tt = tip.querySelector('.tiptext');
+  if (tt) tt.style.display = 'none';
+});
+
+document.addEventListener('click', e => {
+  document.querySelectorAll('.cb-dropdown.open').forEach(dd => {
+    if (!dd.contains(e.target)) dd.classList.remove('open');
+  });
+});
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// Load CSV
+initMap();
+renderSizeSlider();
+
+Papa.parse('bazaraki_land.csv', {
+  download: true,
+  header: true,
+  skipEmptyLines: true,
+  complete: function(results) {
+    rawData = results.data.map(r => {
+      const listing_area = num(r.listing_area_m2);
+      const parcel_area = num(r.parcel_area_m2);
+      return {
+        ...r,
+        price_numeric: num(r.price_numeric),
+        listing_area_m2: listing_area,
+        parcel_area_m2: parcel_area,
+        area_m2: listing_area != null ? listing_area : parcel_area,
+        cost_per_sqm: num(r.cost_per_sqm),
+        lat: num(r.lat),
+        lng: num(r.lng),
+        road_distance_m: num(r.road_distance_m),
+        slope_pct: num(r.slope_pct),
+        hosting_capacity_mw: num(r.hosting_capacity_mw),
+        res_total_mw: num(r.res_total_mw),
+        available_capacity_mw: num(r.available_capacity_mw),
+      };
+    });
+    document.getElementById('loading-msg').style.display = 'none';
+    document.getElementById('results-table').style.display = '';
+    populateSelects();
+    applyFilters();
+  }
+});
+</script>
+</body>
+</html>

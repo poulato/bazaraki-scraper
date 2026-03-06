@@ -23,6 +23,27 @@ For testing, edit `MAX_PAGES` at the top of `scrape.py` (e.g. set to `3` to only
 
 Output: `bazaraki_land.csv`
 
+## Exploring the data
+
+**1. Streamlit dashboard (maps + filters)**  
+Interactive map and filters for solar park land (area, slope, grid capacity, etc.):
+
+```bash
+streamlit run dashboard.py
+```
+
+**2. Python / pandas**  
+Load the CSV and filter, aggregate, or plot in a script or Jupyter:
+
+```bash
+python explore.py          # quick stats and example queries
+# or
+jupyter notebook           # then New → Notebook, paste from explore.py
+```
+
+**3. Spreadsheet**  
+Open `bazaraki_land.csv` in Excel, Numbers, or Google Sheets for sorting and ad‑hoc filters.
+
 ## Notes
 
 - Runs locally using `curl_cffi` to bypass Cloudflare
